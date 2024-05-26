@@ -61,7 +61,7 @@ class UnitLog(object):
         while True:
             self.started.set()
             try:
-                log_box: LogBox = UnitHandler.DEFAULT_LOG_QUEUE.get(timeout=0.3)
+                log_box: LogBox = UnitHandler.DEFAULT_LOG_QUEUE.get(timeout=0.1)
             except Empty:
                 if self.stopped.is_set():
                     break
