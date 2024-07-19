@@ -35,7 +35,7 @@ class UnitLog(object):
         self.started: Event = mp.Event()
         self.stopped: Event = mp.Event()
         self.log_num = mp.Value('i', 0)
-        self.worker = mp.Process(target=self.listening_log_msg, daemon=False)
+        self.worker = mp.Process(target=self.listening_log_msg, daemon=True)
         self._proxy_handler_map = {}
 
     def _init_proxy_handler(self, log_box: LogBox) -> PoxyConsoleLogWriter:
@@ -65,6 +65,8 @@ class UnitLog(object):
             except Empty:
                 if self.stopped.is_set():
                     break
+                continue
+            except KeyboardInterrupt:
                 continue
             try:
                 handler = self._init_proxy_handler(log_box)
