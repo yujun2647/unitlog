@@ -103,43 +103,6 @@ class UnitLog(object):
                         parent_logger_name=None,
                         force_all_console_log_to_file=False) -> logging.Logger:
 
-        caller_frame = inspect.currentframe().f_back
-        caller_module_name = caller_frame.f_globals.get('__name__')
-        caller_func_name = caller_frame.f_code.co_name
-
-        # ---------------------------------------------------------
-        # 规则 1: 严禁全局裸奔 (必须包在函数里)
-        # ---------------------------------------------------------
-        if caller_func_name == '<module>':
-            raise RuntimeError(
-                "⛔️ [禁止全局调用] 你必须把此函数放在一个 def 函数内部调用，\n"
-                """
-                例如 
-                def main(): 
-                    register_logger()
-                    
-                if __name__ == '__main__':
-                    main()
-                """
-                "严禁在脚本顶层直接执行，否则会导致多进程 spawn 时的无限递归。"
-            )
-
-        # ---------------------------------------------------------
-        # 规则 2: 必须是 Main 入口，或者是 单元测试
-        # ---------------------------------------------------------
-        # 如果是直接运行脚本，name 是 __main__ -> 通过
-        # 如果是 unittest，name 是 文件名 -> 但 is_under_testing() 为真 -> 通过
-        # 如果是 spawn 子进程，name 是 文件名 -> 且不在测试栈中 -> 拦截
-        if caller_module_name != '__main__' and not is_under_testing():
-            raise RuntimeError(
-                f"⛔️ [禁止导入执行] 检测到当前模块名为 '{caller_module_name}'。\n"
-                "此函数只能在 'if __name__ == \"__main__\":' 入口下执行，\n"
-                "或者是通过单元测试(unittest/pytest)执行。\n"
-                "禁止在多进程 spawn 导入阶段或作为普通模块被 import 时执行。"
-            )
-
-        print(f"✅ 安全检查通过 (调用者: {caller_module_name}, 环境安全)")
-
         if not self.started.is_set():
             self.bus_queue = mp.Queue()
             self.worker = mp.Process(target=self.listening_log_msg, args=(self.bus_queue, ), daemon=True)
@@ -292,6 +255,7 @@ def main():
     register_logger(name="test", level=logging.DEBUG,
                     log_filepath="./temp/test.log")
     _logger.info("lllll")
+
 
 
 
