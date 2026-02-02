@@ -114,6 +114,7 @@ class UnitLog(object):
             logger.handlers.append(console_handler)
         if file_log:
             assert log_filepath, "log_filepath must be set"
+            os.makedirs(os.path.dirname(log_filepath), exist_ok=True)
             file_handler = UnitFileHandler(log_filepath, mode=file_log_mode)
             file_handler.setFormatter(full_formatter)
             logger.handlers.append(file_handler)
