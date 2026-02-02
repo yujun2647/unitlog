@@ -1,5 +1,6 @@
 import os
 import sys
+import inspect
 import atexit
 import logging
 import traceback
@@ -7,8 +8,23 @@ from queue import Empty
 import multiprocessing as mp
 from multiprocessing.synchronize import Event
 
-from unitlog.handlers import (LogBox, UnitHandler, UnitFileHandler,
-                              UnitConsoleHandler)
+from unitlog.handlers import LogBox, UnitFileHandler, UnitConsoleHandler
+
+
+
+def is_under_testing():
+    """
+    检查当前是否处于单元测试环境 (unittest 或 pytest)。
+    原理：向上遍历栈帧，如果发现调用链中有 unittest 或 pytest 的相关文件，则认为是测试环境。
+    """
+    # 简单的白名单检查
+    for frame_info in inspect.stack():
+        module_name = frame_info.frame.f_globals.get('__name__', '')
+        # 如果调用栈里包含 unittest 或 pytest，说明是在测试
+        if module_name and ('unittest' in module_name or 'pytest' in module_name):
+            return True
+    return False
+
 
 
 class PoxyConsoleLogWriter(object):
@@ -35,7 +51,8 @@ class UnitLog(object):
         self.started: Event = mp.Event()
         self.stopped: Event = mp.Event()
         self.log_num = mp.Value('i', 0)
-        self.worker = mp.Process(target=self.listening_log_msg, daemon=True)
+        self.worker = None
+        self.bus_queue = None
         self._proxy_handler_map = {}
 
     def _init_proxy_handler(self, log_box: LogBox) -> PoxyConsoleLogWriter:
@@ -57,11 +74,11 @@ class UnitLog(object):
                 raise TypeError(f"Unsupported log type: {log_box.log_type}")
         return self._proxy_handler_map[hkey]
 
-    def listening_log_msg(self):
+    def listening_log_msg(self, bus_queue):
         while True:
             self.started.set()
             try:
-                log_box: LogBox = UnitHandler.DEFAULT_LOG_QUEUE.get(timeout=0.1)
+                log_box: LogBox = bus_queue.get(timeout=0.1)
             except Empty:
                 if self.stopped.is_set():
                     break
@@ -85,7 +102,47 @@ class UnitLog(object):
                         log_filepath=None,
                         parent_logger_name=None,
                         force_all_console_log_to_file=False) -> logging.Logger:
+
+        caller_frame = inspect.currentframe().f_back
+        caller_module_name = caller_frame.f_globals.get('__name__')
+        caller_func_name = caller_frame.f_code.co_name
+
+        # ---------------------------------------------------------
+        # 规则 1: 严禁全局裸奔 (必须包在函数里)
+        # ---------------------------------------------------------
+        if caller_func_name == '<module>':
+            raise RuntimeError(
+                "⛔️ [禁止全局调用] 你必须把此函数放在一个 def 函数内部调用，\n"
+                """
+                例如 
+                def main(): 
+                    register_logger()
+                    
+                if __name__ == '__main__':
+                    main()
+                """
+                "严禁在脚本顶层直接执行，否则会导致多进程 spawn 时的无限递归。"
+            )
+
+        # ---------------------------------------------------------
+        # 规则 2: 必须是 Main 入口，或者是 单元测试
+        # ---------------------------------------------------------
+        # 如果是直接运行脚本，name 是 __main__ -> 通过
+        # 如果是 unittest，name 是 文件名 -> 但 is_under_testing() 为真 -> 通过
+        # 如果是 spawn 子进程，name 是 文件名 -> 且不在测试栈中 -> 拦截
+        if caller_module_name != '__main__' and not is_under_testing():
+            raise RuntimeError(
+                f"⛔️ [禁止导入执行] 检测到当前模块名为 '{caller_module_name}'。\n"
+                "此函数只能在 'if __name__ == \"__main__\":' 入口下执行，\n"
+                "或者是通过单元测试(unittest/pytest)执行。\n"
+                "禁止在多进程 spawn 导入阶段或作为普通模块被 import 时执行。"
+            )
+
+        print(f"✅ 安全检查通过 (调用者: {caller_module_name}, 环境安全)")
+
         if not self.started.is_set():
+            self.bus_queue = mp.Queue()
+            self.worker = mp.Process(target=self.listening_log_msg, args=(self.bus_queue, ), daemon=True)
             self.worker.start()
             if not self.started.wait(timeout=3):
                 raise ValueError("unit log process is not started")
@@ -109,13 +166,13 @@ class UnitLog(object):
             datefmt="%a, %d %b %Y %H:%M:%S"
         )
         if console_log:
-            console_handler = UnitConsoleHandler()
+            console_handler = UnitConsoleHandler(bus_queue=self.bus_queue)
             console_handler.setFormatter(simple_formatter)
             logger.handlers.append(console_handler)
         if file_log:
             assert log_filepath, "log_filepath must be set"
             os.makedirs(os.path.dirname(log_filepath), exist_ok=True)
-            file_handler = UnitFileHandler(log_filepath, mode=file_log_mode)
+            file_handler = UnitFileHandler(log_filepath, mode=file_log_mode, bus_queue=self.bus_queue)
             file_handler.setFormatter(full_formatter)
             logger.handlers.append(file_handler)
             logger.info("\nLog_filename: {}".format(log_filepath))
@@ -227,10 +284,16 @@ DEFAULT_LOG = UnitLog()
 register_logger: UnitLog.register_logger = DEFAULT_LOG.register_logger
 atexit.register(lambda: DEFAULT_LOG.stopped.set())
 
-if __name__ == "__main__":
-    import time
+
+
+def main():
 
     _logger = logging.getLogger("test")
     register_logger(name="test", level=logging.DEBUG,
                     log_filepath="./temp/test.log")
     _logger.info("lllll")
+
+
+
+if __name__ == "__main__":
+    main()

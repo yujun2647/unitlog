@@ -13,7 +13,10 @@ class LogBox(object):
 
 class UnitHandler(logging.StreamHandler):
     LOG_TYPE = "console"
-    DEFAULT_LOG_QUEUE = mp.Queue()
+
+    def __init__(self, stream=None, bus_queue=None):
+        super().__init__(stream)
+        self.bus_queue = bus_queue
 
     def handle(self, record):
         """ without acquiring lock
@@ -39,7 +42,7 @@ class UnitHandler(logging.StreamHandler):
             msg = self.format(record)
             # issue 35046: merged two stream.writes into one.
             log_msg = msg + self.terminator
-            UnitHandler.DEFAULT_LOG_QUEUE.put(self.wrap_msg(log_msg))
+            self.bus_queue.put(self.wrap_msg(log_msg))
         except RecursionError:  # See issue 36272
             raise
         except Exception:
@@ -53,8 +56,8 @@ class UnitConsoleHandler(UnitHandler):
 class UnitFileHandler(UnitHandler):
     LOG_TYPE = "file"
 
-    def __init__(self, log_filepath, mode):
-        super().__init__()
+    def __init__(self, log_filepath, mode, bus_queue=None):
+        super().__init__(bus_queue=bus_queue)
         self.log_filepath = log_filepath
         self.mode = mode
 
