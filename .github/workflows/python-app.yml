@@ -11,7 +11,7 @@ on:
   workflow_dispatch: # 允许手动点击按钮触发，方便调试
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   extract-version:
@@ -50,7 +50,7 @@ jobs:
           git push origin ${{ steps.parse_version.outputs.tag_name }}
 
   build:
-
+    needs: extract-version
     runs-on: ubuntu-latest
 
     steps:
@@ -76,7 +76,7 @@ jobs:
   
 
   deploy:
-
+    needs: [extract-version, build]
     runs-on: ubuntu-latest
 
     steps:
@@ -100,7 +100,7 @@ jobs:
 
 
   release:
-    needs: [deploy, ]
+    needs: [extract-version, deploy]
     runs-on: ubuntu-latest
     steps:
 
