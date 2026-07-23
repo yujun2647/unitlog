@@ -101,7 +101,20 @@ class UnitLog(object):
                         console_log=True, file_log=False, file_log_mode="a",
                         log_filepath=None,
                         parent_logger_name=None,
-                        force_all_console_log_to_file=False) -> logging.Logger:
+                        force_all_console_log_to_file=False,
+                        enable_faulthandler=False) -> logging.Logger:
+
+        # faulthandler: 在 stderr 可用时尽早启用，避免 --windowed 模式下崩溃
+        if enable_faulthandler:
+            import faulthandler
+            if sys.stderr is None:
+                # 如果 log_filepath 已知，直接定向到日志文件；否则 fallback devnull
+                if log_filepath:
+                    os.makedirs(os.path.dirname(log_filepath), exist_ok=True)
+                    sys.stderr = open(log_filepath, "a")
+                else:
+                    sys.stderr = open(os.devnull, "w")
+            faulthandler.enable()
 
         if not self.started.is_set():
             self.bus_queue = mp.Queue()
