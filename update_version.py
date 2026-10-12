@@ -4,11 +4,12 @@ import re
 import json
 import subprocess
 import requests
+from packaging import version
 
 # 配置信息
 LAST_VERSION_FILE = '.last_git_publish_version'
 INIT_FILE = 'unitlog/__init__.py'
-MODEL_API_URL = 'http://walkerjun.com:5674/chat'
+MODEL_API_URL = 'https://api.deepseek.com/chat/completions'
 
 
 def get_last_version():
@@ -112,36 +113,32 @@ def summarize_changes(commits):
         - [仅列出老功能的修复，忽略新功能的开发修复]
         """
 
-    # 调用大模型API
-    headers = {'Content-Type': 'application/json'}
+    # 调用 DeepSeek API
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not api_key:
+        print("错误：请设置 DEEPSEEK_API_KEY 环境变量")
+        return generate_fallback_summary(commits)
+
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {api_key}'
+    }
     try:
-        # 注意：这里可能需要根据你的 API 实际参数调整（例如有些是 messages 列表）
         payload = {
-            'messages': [
+            "model": "deepseek-v4-flash",
+            "messages": [
                 {"role": "system", "content": "你是一个资深的技术文档专家，擅长将技术语言转化为通俗易懂的产品文案。"},
                 {"role": "user", "content": _prompt}
             ],
-            # 如果你的接口只接受单一 prompt 字符串，请保留原来的写法： 'message': _prompt
-            # 下面保留你的原始 key 'message' 以防兼容性问题，如果支持 messages 列表更好
-            'message': _prompt
+            "temperature": 0.3,
+            "max_tokens": 2048
         }
 
-        # 兼容性处理：如果上面的 payload 结构不对，请改回你原来的。
-        # 这里假设你的接口是简单的 prompt 传递
-        legacy_payload = {'message': _prompt}
-
-        res = requests.post(MODEL_API_URL, headers=headers, data=json.dumps(legacy_payload), timeout=30)
+        res = requests.post(MODEL_API_URL, headers=headers, data=json.dumps(payload), timeout=60)
         res.raise_for_status()
+        response_data = res.json()
 
-        # 尝试解析结果
-        # 假设 API 返回的直接是 text 或在某个字段里，这里尽量做容错
-        try:
-            response_data = res.json()
-            # 根据你实际 API 返回结构修改，例如 response_data['choices'][0]['message']['content']
-            # 这里沿用你原来的逻辑，假设返回的 json 里直接包含文本或需要正则
-            raw_text = res.text
-        except:
-            raw_text = res.text
+        raw_text = response_data["choices"][0]["message"]["content"]
 
         # 提取 Markdown (如果有代码块包裹)
         markdown_pattern = re.compile(r'```markdown\s*([\s\S]*?)\s*```')
