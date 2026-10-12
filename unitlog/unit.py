@@ -1,8 +1,10 @@
 import os
 import sys
+import time
 import inspect
 import atexit
 import logging
+import datetime
 import traceback
 from queue import Empty
 import multiprocessing as mp
@@ -41,8 +43,86 @@ class PoxyConsoleLogWriter(object):
 
 
 class PoxyFileLogWriter(PoxyConsoleLogWriter):
-    def __init__(self, log_filepath, file_mode="a"):
+    """文件日志写入器（运行在日志子进程内）。
+
+    内置按天轮转：当天日期变化时，把当前文件改名为 ``{path}.{YYYY-MM-DD}``
+    并重建主文件；同时按 mtime 清理超过 ``file_log_keep_days`` 天的轮转文件。
+
+    注意：``force_all_console_log_to_file`` 里的 dup2 句柄、faulthandler 的
+    stderr 以及被接管的 ``sys.stdout/stderr`` 不参与轮转——它们仍指向轮转前
+    的 inode，改名后继续写旧文件。
+    """
+
+    DATE_FORMAT = "%Y-%m-%d"
+
+    def __init__(self, log_filepath, file_mode="a", rotate=True,
+                 keep_days=7):
+        self.log_filepath = log_filepath
+        self.rotate = rotate
+        self.keep_days = max(0, int(keep_days or 0))
         super().__init__(stream=open(log_filepath, file_mode))
+        self._current_period = self._period_of(time.time())
+        if self.rotate:
+            # 启动即清理一次：进程长期不写日志时也不留过期文件
+            self._cleanup_expired()
+
+    @classmethod
+    def _period_of(cls, timestamp):
+        return datetime.date.fromtimestamp(timestamp)
+
+    def emit(self, log_msg):
+        if self.rotate and self._period_of(time.time()) > self._current_period:
+            self._rotate()
+        super().emit(log_msg)
+
+    def _rotate(self):
+        old_period = self._current_period
+        try:
+            self.stream.flush()
+            self.stream.close()
+        except Exception:
+            pass
+        target = "{}.{}".format(self.log_filepath,
+                                old_period.strftime(self.DATE_FORMAT))
+        try:
+            if os.path.exists(self.log_filepath) and not os.path.exists(target):
+                os.replace(self.log_filepath, target)
+        except OSError as e:
+            print("rotate log failed: {}".format(e))
+        self.stream = open(self.log_filepath, "a")
+        self._current_period = self._period_of(time.time())
+        self._cleanup_expired()
+
+    def _iter_rotated_files(self):
+        """只认本 writer 生成的 ``{basename}.{YYYY-MM-DD}`` 文件，避免误删同目录其他文件。
+        """
+        dir_path = os.path.dirname(self.log_filepath) or "."
+        prefix = os.path.basename(self.log_filepath) + "."
+        try:
+            filenames = os.listdir(dir_path)
+        except OSError:
+            return
+        for filename in filenames:
+            if not filename.startswith(prefix):
+                continue
+            try:
+                datetime.datetime.strptime(filename[len(prefix):],
+                                           self.DATE_FORMAT)
+            except ValueError:
+                continue
+            yield os.path.join(dir_path, filename)
+
+    def _cleanup_expired(self):
+        if self.keep_days <= 0:
+            return
+        deadline = time.time() - self.keep_days * 24 * 3600
+        for filepath in self._iter_rotated_files():
+            try:
+                if os.path.getmtime(filepath) > deadline:
+                    continue
+                os.remove(filepath)
+            except OSError as e:
+                print("remove expired log failed: {}".format(e))
 
 
 class UnitLog(object):
@@ -68,7 +148,9 @@ class UnitLog(object):
 
                 self._proxy_handler_map[hkey] = PoxyFileLogWriter(
                     log_filepath=abs_log_filepath,
-                    file_mode=log_box.file_mode
+                    file_mode=log_box.file_mode,
+                    rotate=log_box.file_log_rotate,
+                    keep_days=log_box.file_log_keep_days
                 )
             else:
                 raise TypeError(f"Unsupported log type: {log_box.log_type}")
@@ -102,7 +184,14 @@ class UnitLog(object):
                         log_filepath=None,
                         parent_logger_name=None,
                         force_all_console_log_to_file=False,
-                        enable_faulthandler=False) -> logging.Logger:
+                        enable_faulthandler=False,
+                        file_log_rotate=True,
+                        file_log_keep_days=7) -> logging.Logger:
+        """
+        :param file_log_rotate: 文件日志是否按天自动轮转
+            （``app.log`` → ``app.log.2026-10-12``），默认开启
+        :param file_log_keep_days: 轮转文件按 mtime 保留的天数，<=0 表示不清理
+        """
 
         # faulthandler: 在 stderr 可用时尽早启用，避免 --windowed 模式下崩溃
         if enable_faulthandler:
@@ -148,7 +237,10 @@ class UnitLog(object):
         if file_log:
             assert log_filepath, "log_filepath must be set"
             os.makedirs(os.path.dirname(log_filepath), exist_ok=True)
-            file_handler = UnitFileHandler(log_filepath, mode=file_log_mode, bus_queue=self.bus_queue)
+            file_handler = UnitFileHandler(log_filepath, mode=file_log_mode,
+                                           bus_queue=self.bus_queue,
+                                           rotate=file_log_rotate,
+                                           keep_days=file_log_keep_days)
             file_handler.setFormatter(full_formatter)
             logger.handlers.append(file_handler)
             logger.info("\nLog_filename: {}".format(log_filepath))

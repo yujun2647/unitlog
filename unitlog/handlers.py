@@ -4,11 +4,14 @@ import multiprocessing as mp
 
 class LogBox(object):
     def __init__(self, log_msg, log_type="console",
-                 log_filepath="", file_mode="a"):
+                 log_filepath="", file_mode="a",
+                 file_log_rotate=True, file_log_keep_days=7):
         self.log_msg = log_msg
         self.log_type = log_type
         self.log_filepath = log_filepath
         self.file_mode = file_mode
+        self.file_log_rotate = file_log_rotate
+        self.file_log_keep_days = file_log_keep_days
 
 
 class UnitHandler(logging.StreamHandler):
@@ -56,12 +59,17 @@ class UnitConsoleHandler(UnitHandler):
 class UnitFileHandler(UnitHandler):
     LOG_TYPE = "file"
 
-    def __init__(self, log_filepath, mode, bus_queue=None):
+    def __init__(self, log_filepath, mode, bus_queue=None,
+                 rotate=True, keep_days=7):
         super().__init__(bus_queue=bus_queue)
         self.log_filepath = log_filepath
         self.mode = mode
+        self.rotate = rotate
+        self.keep_days = keep_days
 
     def wrap_msg(self, log_msg) -> LogBox:
         return LogBox(log_msg=log_msg, log_type=self.LOG_TYPE,
                       log_filepath=self.log_filepath,
-                      file_mode=self.mode)
+                      file_mode=self.mode,
+                      file_log_rotate=self.rotate,
+                      file_log_keep_days=self.keep_days)
